@@ -17,6 +17,8 @@ _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _CLAUSE = re.compile(r"\b\d\.\d{1,2}\.\d{1,2}\b|제\s?\d+조(?:의\s?\d+)?")
 # 확정적으로 말하면 안 되는 표현
 _ABSOLUTE = re.compile(r"반드시 (?:통과|합격|인증)|무조건|100% |결함이 아닙니다|문제없습니다")
+# 한자와 일본어 가나. 한국어 답변에 섞이면 근거에서 왔는지 확인해야 한다.
+_FOREIGN = re.compile(r"[一-鿿぀-ヿ]")
 
 # 숫자처럼 보이지만 근거를 따질 필요가 없는 것들
 _SKIP_NUM = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
@@ -123,6 +125,14 @@ def check(answer, chunks):
             issues.append(f"조회하지 않은 조항 인용: {m.group()}")
 
     issues += _check_paragraphs(answer, chunks)
+
+    # 근거에 없는 한자·가나. 작은 모델은 한국어를 생성하다 중국어로 새는 일이 있다.
+    # 그런데 법령 원문이 「刑事訴訟法」·公衆·事實審 처럼 한자를 쓰므로 통째로 막을 수 없다
+    # (근거 문서 410개 조각 중 16개에 한자 33종이 있다).
+    # 그래서 다른 검사와 같은 기준을 쓴다 — 읽은 근거에 없는 글자면 모델이 만들어 낸 것이다.
+    stray = sorted({c for c in _FOREIGN.findall(answer) if c not in hay})
+    if stray:
+        issues.append(f"근거에 없는 문자: {''.join(stray)[:16]}")
 
     if _ABSOLUTE.search(answer):
         issues.append(f"단정 표현: {_ABSOLUTE.search(answer).group()}")
