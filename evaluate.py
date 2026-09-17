@@ -17,7 +17,7 @@ import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-from config import DATA
+from config import DATA, WORKERS
 
 # 문서마다 가운뎃점 문자가 다르고(ㆍ · ∙) 띄어쓰기도 제각각이라 맞춰 놓고 비교한다.
 _MIDDOT = re.compile(r"[ㆍ·∙•]")
@@ -90,7 +90,7 @@ def one_round(cases):
             return c, {"answer": f"[실행 실패] {e}", "tools": [], "route": "?",
                        "escalated": False}
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         return [score(c, r) for c, r in ex.map(go, cases)]
 
 

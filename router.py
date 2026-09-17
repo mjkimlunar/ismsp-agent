@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from config import ROUTE_CONFIDENCE_FLOOR
 from llm import chat
-from prompts import ROUTE_GUIDE
+from prompts import ROUTE_GUIDE, with_history
 
 Route = Literal["MGMT", "PROTECT", "PRIVACY", "CERT", "OTHER"]
 
@@ -24,10 +24,15 @@ class Decision(BaseModel):
 _llm = chat("분류").with_structured_output(Decision)
 
 
-def classify(question):
-    """문의 하나를 분류한다. 실패하면 OTHER 로 떨어뜨려 사람에게 넘어가게 한다."""
+def classify(question, history=None):
+    """문의 하나를 분류한다. 실패하면 OTHER 로 떨어뜨려 사람에게 넘어가게 한다.
+
+    history 를 주면 "그건 언제까지예요?" 처럼 앞을 가리키는 문의도 주제를 찾아 분류한다.
+    이전 대화는 주제를 알아내는 데만 쓰고, 답할 대상은 언제나 지금 문의 하나다.
+    """
     try:
-        d = _llm.invoke([("system", ROUTE_GUIDE), ("human", question)])
+        d = _llm.invoke([("system", ROUTE_GUIDE),
+                         ("human", with_history(question, history))])
     except Exception as e:
         return {"route": "OTHER", "confidence": 0.0, "reason": f"분류 실패: {e}"}
     return {"route": d.route, "confidence": d.confidence, "reason": d.reason}

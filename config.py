@@ -26,6 +26,9 @@ MAX_CHUNK_CHARS = 1200
 # 라우터가 이 값보다 확신이 없으면 사람에게 넘긴다.
 ROUTE_CONFIDENCE_FLOOR = 0.55
 
+# 평가를 몇 갈래로 나눠 돌릴지. 무료 한도 모델은 분당 요청 수가 묶여 있어 낮춰야 한다.
+WORKERS = int(os.getenv("ISMSP_WORKERS", "4"))
+
 
 def check_env():
     """키가 없으면 실행 전에 알려준다. import 시점에 죽지는 않게 한다."""

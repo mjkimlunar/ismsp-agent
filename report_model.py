@@ -27,7 +27,18 @@ import llm
 from config import DATA
 
 CJK = re.compile(r"[一-鿿぀-ヿ]")
-PASS, FAIL, WARN = "통과", "실패", "미흡"
+PASS, FAIL, WARN, QUOTA = "통과", "실패", "미흡", "한도"
+
+# "모델이 못 한다" 와 "제공자가 안 해준다" 는 다른 이야기다. 섞으면 능력을 잘못 판정한다.
+# 무료 한도는 분당 요청 수와 일일 요청 수가 묶여 있고, 인기 모델은 과부하로 503 을 준다.
+_QUOTA = re.compile(r"RESOURCE_EXHAUSTED|429|503|UNAVAILABLE|quota|rate limit|"
+                    r"high demand|overloaded", re.I)
+
+
+def why(e):
+    """오류를 '한도·과부하' 와 '능력 부족' 으로 가른다."""
+    s = str(e)
+    return (QUOTA if _QUOTA.search(s) else FAIL), s
 
 
 def step(n, title):
@@ -49,7 +60,7 @@ def check_reply():
     except Exception as e:
         one("호출", FAIL, str(e)[:120])
         return False
-    text = (out.content or "").strip()
+    text = llm.text_of(out).strip()
     took = time.time() - t0
     one("호출", PASS, f"{took:.1f}초 · {len(text)}자")
 
@@ -72,16 +83,26 @@ def check_structured(n=5):
           "비밀번호를 몇 자리로 해야 하나요?",
           "위험평가는 얼마나 자주 하나요?",
           "컨설팅 업체를 추천해 주세요."][:n]
-    ok = 0
+    ok = quota = 0
     for q in qs:
         d = classify(q)
-        bad = d["reason"].startswith("분류 실패")
-        if not bad and d["route"] in ("MGMT", "PROTECT", "PRIVACY", "CERT", "OTHER"):
+        if d["reason"].startswith("분류 실패"):
+            v, s = why(d["reason"])
+            quota += (v == QUOTA)
+            one(q[:24], v, s[:74])
+        elif d["route"] in ("MGMT", "PROTECT", "PRIVACY", "CERT", "OTHER"):
             ok += 1
         else:
-            one(q[:26], FAIL, d["reason"][:70])
-    rate = ok / len(qs)
-    one(f"스키마 준수 {ok}/{len(qs)}", PASS if rate == 1 else (WARN if rate >= .6 else FAIL))
+            one(q[:24], FAIL, f"스키마 밖의 값: {d['route']}")
+
+    tried = len(qs) - quota
+    if tried == 0:
+        one("스키마 준수", QUOTA, "한도·과부하로 한 번도 재지 못했다")
+        return False
+    rate = ok / tried
+    note = f"({quota}건은 한도·과부하로 제외)" if quota else ""
+    one(f"스키마 준수 {ok}/{tried} {note}",
+        PASS if rate == 1 else (WARN if rate >= .6 else FAIL))
     return rate >= .6
 
 
@@ -92,11 +113,14 @@ def check_tools():
 
     m = llm.chat("진단")
     try:
-        bound = m.bind_tools(tool_mod.make_tools("CERT"), parallel_tool_calls=False)
+        bound = llm.bind(m, tool_mod.make_tools("CERT"))
     except Exception as e:
-        one("bind_tools", FAIL, str(e)[:110])
+        v, s = why(e)
+        one("bind_tools", v, s[:110])
         return False
-    one("bind_tools", PASS)
+    one("bind_tools", PASS,
+        "parallel_tool_calls 지원" if llm.supports_parallel_toggle()
+        else "parallel_tool_calls 미지원 — 호출 뒤 잘라 낸다")
 
     try:
         out = bound.invoke([
@@ -108,10 +132,14 @@ def check_tools():
 
     calls = getattr(out, "tool_calls", None) or []
     if not calls:
-        one("도구 호출", FAIL, f"도구를 부르지 않고 바로 답했다 — {(out.content or '')[:60]}")
+        one("도구 호출", FAIL, f"도구를 부르지 않고 바로 답했다 — {llm.text_of(out)[:60]}")
         return False
     one("도구 호출", PASS, f"{[c['name'] for c in calls]}")
-    one("한 번에 하나만", PASS if len(calls) == 1 else WARN, f"{len(calls)}개 호출")
+    trimmed, dropped = llm.first_tool_call_only(out)
+    if dropped:
+        one("한 번에 하나만", PASS, f"모델이 {len(calls)}개를 불러 {dropped}개를 잘라 냈다")
+    else:
+        one("한 번에 하나만", PASS, "모델이 하나만 불렀다")
     return True
 
 

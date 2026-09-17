@@ -30,9 +30,9 @@ import verify
 from config import MAX_TOOL_TURNS
 from context import ROUTE_LABELS, search_in_route
 from corpus import SOURCE_NAMES, get_chunk, render
-from llm import chat
+from llm import bind, chat, first_tool_call_only, text_of
 from prompts import (ANSWER_RULES, COMPOSE_FINAL, COMPOSE_GATE, COMPOSE_HEAD,
-                     COMPOSE_RULES, ESCALATE_TEMPLATE)
+                     COMPOSE_RULES, ESCALATE_TEMPLATE, with_history)
 from router import classify, should_escalate
 
 _llm = chat("답변")
@@ -40,6 +40,28 @@ _llm = chat("답변")
 # 문의가 수치를 묻는가 / 조각에 수치가 적혀 있는가
 _ASKS_NUMBER = re.compile(r"몇|얼마|며칠|어느 정도|자릿수|주기|기한|비용|수수료")
 _HAS_NUMBER = re.compile(r"\d+\s*(?:자리|개월|일|년|회|원|시간|분|%|배|명)")
+
+# 앞 대화를 **가리키는** 말. 이런 게 있으면 그 문장만으로는 검색이 안 된다.
+#
+# "그럼" 은 넣으면 안 된다. 지시어가 아니라 접속사라서 새 주제를 꺼낼 때도 붙는다.
+# "그럼 인증은 언제까지 받아야 하나요?" 에 앞 주제(비밀번호)를 섞었더니
+# 검색이 엉뚱한 조항으로 끌려갔다.
+_REFERS_BACK = re.compile(r"그건|그거|그게|그것|거기|해당|이건|이거|위에|앞에서|말씀하신")
+
+
+def search_query(question, history):
+    """검색에 쓸 질의를 만든다.
+
+    "그건 언제까지예요?" 로는 BM25 가 아무것도 못 찾는다. 앞을 가리키는 말이 있거나
+    문장이 너무 짧으면 직전 문의를 앞에 붙여 준다. 늘 붙이지는 않는다 —
+    새 주제를 꺼낸 문의에까지 앞 문장을 섞으면 엉뚱한 조각이 올라온다.
+    """
+    if not history:
+        return question
+    if not (_REFERS_BACK.search(question) or len(question) < 18):
+        return question
+    return f"{history[-1]['question']} {question}"
+
 
 # 같은 수치가 여러 문서에 있으면 원문을 먼저 본다. 안내서와 점검항목은 원문의 해설이다.
 # 검색 점수로 고르면 안 된다. 안내서 조각이 길고 말이 많아 점수가 늘 더 높게 나와서,
@@ -49,6 +71,7 @@ _DOC_RANK = ["criteria", "law", "notice", "guide", "checklist"]
 
 class State(TypedDict):
     question: str
+    history: list                               # 이전 턴들 [{question, answer}, …]
     route: str
     confidence: float
     route_reason: str
@@ -57,6 +80,7 @@ class State(TypedDict):
     answer: str
     missing: str                                # 근거에 없다고 작성 단계가 짚은 것
     retries: int
+    nudged: bool                                # 도구를 부르라고 한 번 되돌렸는가
     escalated: bool
     escalate_reason: str
     verification: dict
@@ -64,7 +88,7 @@ class State(TypedDict):
 
 # ── ① 카테고리 판정 ────────────────────────────────────────────────
 def node_classify(state):
-    d = classify(state["question"])
+    d = classify(state["question"], state.get("history"))
     return {"route": d["route"], "confidence": d["confidence"],
             "route_reason": d["reason"]}
 
@@ -87,10 +111,11 @@ def node_assemble(state):
 
     route = state["route"]
     sources, _ = ROUTE_DOCS[route]
+    query = search_query(state["question"], state.get("history"))
     asks_number = bool(_ASKS_NUMBER.search(state["question"]))
     lines, best = [], []
     for src in sources:
-        hits = search_in_route(state["question"], route, source=src, top_k=4)
+        hits = search_in_route(query, route, source=src, top_k=4)
         if not hits:
             continue
         titles = "\n".join(f"    - [{c['id']}] {c['section'].split(' > ')[-1]}"
@@ -102,6 +127,20 @@ def node_assemble(state):
             best.append((_DOC_RANK.index(src), src))
 
     shelf = "\n".join(lines) or "  (문의와 가까운 조항을 찾지 못했다)"
+
+    # 앞 대화를 이어받은 문의라면 무엇을 이어받았는지 못 박는다.
+    # 선반은 합성된 질의로 만들어 옳은 조항이 올라오는데, 정작 모델은 도구를 부를 때
+    # 자기 검색어를 쓴다. "그건 심사 때 뭘 확인하나요?" 에 "심사 확인 절차" 로 검색해
+    # 비밀번호가 아니라 퇴직·직무변경 조항을 읽은 적이 있다. 검색어를 지정해 줘야 한다.
+    if query != state["question"]:
+        top = next((c for src in sources
+                    for c in search_in_route(query, route, source=src, top_k=1)), None)
+        topic = top["section"].split(" > ")[-1] if top else ""
+        shelf += (f"\n\n  이 문의는 앞 대화를 이어받은 것이다. 주제는 그대로 "
+                  f"**{topic}** 다.\n"
+                  f"  도구를 부를 때 검색어에 그 주제의 낱말을 반드시 넣어라. "
+                  f"\"심사 확인\" 처럼 이번 턴에 새로 나온 말만으로 검색하면 주제를 잃는다.")
+
     if asks_number and best:
         # 어느 문서에 숫자가 있는지는 항목마다 다르다. 인증기준 2.5.4 에는 자릿수가
         # 없어 안내서를 봐야 하지만, 1.2.3 에는 "연 1회 이상" 이 있어 인증기준으로 족하다.
@@ -151,28 +190,35 @@ def node_retrieve(state):
             "위 목록은 제목뿐이다. 실제 내용은 해당 도구를 불러서 읽어야 한다.\n"
             "목록에 없는 조항이 필요하면 검색어를 바꿔 도구를 불러라."
         )
-        msgs = [SystemMessage(system), HumanMessage(state["question"])]
+        msgs = [SystemMessage(system),
+                HumanMessage(with_history(state["question"], state.get("history")))]
 
     # 도구를 너무 많이 부르면 끊고 지금 가진 근거로 답하게 한다
     turns = sum(1 for m in msgs if isinstance(m, AIMessage) and m.tool_calls)
-    # parallel_tool_calls=False — 한 번에 한 문서만 열게 한다. 동시에 부를 수 있게 두면
-    # 모델이 고르지 않고 열람 가능한 문서를 전부 열어 버린다. 하나씩 열게 하면
-    # 첫 문서에서 답이 나왔을 때 스스로 멈춘다.
-    bound = _llm if turns >= MAX_TOOL_TURNS else _llm.bind_tools(
-        tool_mod.make_tools(route), parallel_tool_calls=False)
+    bound = _llm if turns >= MAX_TOOL_TURNS else bind(_llm,
+                                                      tool_mod.make_tools(route))
 
     reply = bound.invoke(msgs)
+    # 한 번에 한 문서만 연다. 제공자가 옵션으로 막아 주지 못하면 여기서 잘라 낸다.
+    reply, dropped = first_tool_call_only(reply)
     return {"messages": [reply]}
 
 
 def route_after_retrieve(state):
     """조회를 더 할지, 작성으로 넘어갈지, 사람에게 넘길지."""
     last = state["messages"][-1]
-    if not getattr(last, "tool_calls", None):
-        return "compose"                       # 도구를 안 불렀으면 조회 끝
-    if any(c["name"] == "escalate_to_expert" for c in last.tool_calls):
-        return "escalate"
-    return "tools"
+    if getattr(last, "tool_calls", None):
+        if any(c["name"] == "escalate_to_expert" for c in last.tool_calls):
+            return "escalate"
+        return "tools"
+
+    # 도구를 한 번도 부르지 않고 조회를 끝내려는 경우가 있다.
+    # "비번 몇자리요?" 처럼 짧고 거친 문의에서 그랬다. 그러면 근거가 비어 있으니
+    # 작성 단계가 NEED_MORE 를 내고 결국 사람에게 넘어간다 — 답할 수 있는데 넘기는 것이다.
+    # 프롬프트에 "반드시 열어라" 를 적어 두는 것으로는 막히지 않아서 구조로 되돌린다.
+    if not read_chunks(state["messages"]) and not state.get("nudged"):
+        return "nudge"
+    return "compose"
 
 
 # ── ③-2 작성 ──────────────────────────────────────────────────────
@@ -194,7 +240,7 @@ def node_compose(state):
         SystemMessage(f"{rules}\n\n[근거]\n{body}"),
         HumanMessage(f"[문의]\n{state['question']}"),
     ]
-    text = _llm.invoke(msgs).content.strip()
+    text = text_of(_llm.invoke(msgs)).strip()
 
     if text.startswith("NEED_MORE"):
         return {"answer": "", "missing": text.split(":", 1)[-1].strip(),
@@ -220,6 +266,18 @@ def route_after_compose(state):
     if r < 1:
         return "hint"
     return "compose" if r < 2 else "escalate"
+
+
+def node_nudge(state):
+    """문서를 한 번도 열지 않았을 때 되돌려 보낸다.
+
+    목차에 이미 후보 조항이 올라와 있으므로, 검색어까지 짚어 주면 거의 확실히 부른다.
+    한 번만 한다(nudged). 두 번 되돌려도 안 부르면 그때는 근거 없이 갈 수밖에 없다.
+    """
+    return {"nudged": True, "messages": [HumanMessage(
+        "아직 문서를 하나도 열지 않았다. 네가 아는 지식으로 답하거나 넘기지 마라.\n"
+        "위 목차에 올라온 조항 중 문의에 가장 가까운 것을 골라, 그 조항 제목에 나온 "
+        "낱말을 검색어로 삼아 도구를 **반드시 한 번** 불러라.")]}
 
 
 def node_hint(state):
@@ -271,6 +329,7 @@ def build():
     g.add_node("retrieve", node_retrieve)
     g.add_node("tools", node_tools)
     g.add_node("compose", node_compose)
+    g.add_node("nudge", node_nudge)
     g.add_node("hint", node_hint)
     g.add_node("verify", node_verify)
     g.add_node("escalate", node_escalate)
@@ -281,7 +340,8 @@ def build():
     g.add_edge("assemble", "retrieve")
     g.add_conditional_edges("retrieve", route_after_retrieve,
                             {"tools": "tools", "compose": "compose",
-                             "escalate": "escalate"})
+                             "nudge": "nudge", "escalate": "escalate"})
+    g.add_edge("nudge", "retrieve")
     g.add_edge("tools", "retrieve")
     g.add_conditional_edges("compose", route_after_compose,
                             {"verify": "verify", "hint": "hint",
@@ -312,9 +372,15 @@ def called_tools(messages):
     return names
 
 
-def run(question):
-    """문의 하나를 처음부터 끝까지 돌린다. 화면과 평가가 같이 쓴다."""
-    final = graph().invoke({"question": question, "messages": [], "retries": 0,
+def run(question, history=None):
+    """문의 하나를 처음부터 끝까지 돌린다. 화면과 평가가 같이 쓴다.
+
+    history 는 이전 턴들의 [{question, answer}, …] 다. 이전 턴의 **조회 기록은
+    물려주지 않는다.** 물려주면 2번째 턴이 1번째 근거를 그대로 받아쓴다.
+    이어받는 것은 문의와 답변뿐이고, 근거는 턴마다 새로 찾는다.
+    """
+    final = graph().invoke({"question": question, "history": history or [],
+                            "messages": [], "retries": 0, "nudged": False,
                             "missing": ""}, {"recursion_limit": 30})
     msgs = final.get("messages", [])
     return {

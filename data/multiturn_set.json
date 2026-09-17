@@ -1,0 +1,162 @@
+{
+  "_about": [
+    "멀티턴 평가셋. 대화 한 건은 여러 턴으로 이뤄지고, 턴마다 따로 채점한다.",
+    "",
+    "단일턴 평가셋(goldenset)으로는 잡을 수 없는 실패가 따로 있다.",
+    "  주제 유실 — '그건 심사 때 뭘 확인하나요?' 에서 앞 주제를 잃고 엉뚱한 조항을 읽는다.",
+    "  관성      — 새 주제를 꺼냈는데 앞 카테고리를 그대로 이어간다.",
+    "  앞 답 반복 — 이전 문의에 답해 버린다.",
+    "실제로 만들자마자 앞의 둘이 나왔다. 그래서 이 평가셋이 있다.",
+    "",
+    "turns 의 각 항목은 goldenset 과 같은 필드를 쓴다(expect_tools · must · forbid · escalate).",
+    "carry 는 '이 턴이 앞 주제를 이어받아야 하는가' 다. 참이면 주제 유실을 재는 턴이다.",
+    "이 문항들은 어떤 형태로도 프롬프트에 넣지 않는다."
+  ],
+  "conversations": [
+    {
+      "id": "M-01",
+      "title": "비밀번호 기준 → 심사 확인사항 → 주제 전환",
+      "turns": [
+        {
+          "question": "직원 비밀번호를 최소 몇 자리 이상으로 강제해야 하나요?",
+          "route": "PROTECT",
+          "expect_tools": ["search_guide"],
+          "must": [["8자리"], ["10자리"]],
+          "forbid": ["반드시 12자리", "6자리 이상"],
+          "escalate": false,
+          "carry": false
+        },
+        {
+          "question": "그건 심사 때 뭘 확인하나요?",
+          "route": "PROTECT",
+          "expect_tools": ["search_checklist"],
+          "must": [["2.5.4"], ["비밀번호"]],
+          "forbid": ["퇴직", "직무변경", "백업", "보안시스템 운영"],
+          "escalate": false,
+          "carry": true,
+          "note": "앞 주제(비밀번호 2.5.4)를 이어받아야 한다. 이번 턴 낱말만으로 검색하면 엉뚱한 점검항목이 올라온다"
+        },
+        {
+          "question": "개인정보 유출 사고가 나면 언제까지 누구에게 알려야 하나요?",
+          "route": "PRIVACY",
+          "expect_tools": ["search_law"],
+          "must": [["지체 없이"], ["정보주체"], ["보호위원회"]],
+          "forbid": ["72시간", "24시간", "비밀번호"],
+          "escalate": false,
+          "carry": false,
+          "note": "새 주제다. 앞 카테고리(PROTECT)를 관성으로 이어가면 안 된다"
+        }
+      ]
+    },
+    {
+      "id": "M-02",
+      "title": "파기 기한 → 예외 되묻기",
+      "turns": [
+        {
+          "question": "보유기간이 끝난 개인정보는 언제 파기해야 하나요?",
+          "route": "PRIVACY",
+          "expect_tools": ["search_law"],
+          "must": [["지체 없이"]],
+          "forbid": ["30일 이내", "5일 이내"],
+          "escalate": false,
+          "carry": false
+        },
+        {
+          "question": "그럼 예외는 없나요?",
+          "route": "PRIVACY",
+          "expect_tools": ["search_law"],
+          "must": [["다른 법령"]],
+          "forbid": ["예외가 없습니다", "무조건 파기"],
+          "escalate": false,
+          "carry": true,
+          "note": "'그럼' 은 접속사라 주제 합성이 발동하지 않는다. 그래도 앞 주제를 이어야 한다"
+        }
+      ]
+    },
+    {
+      "id": "M-03",
+      "title": "인증 절차 → 기한 되묻기 → 개별 판단 요구",
+      "turns": [
+        {
+          "question": "저희가 ISMS 인증 의무대상자라고 통보를 받았습니다. 언제까지 인증을 받아야 하나요?",
+          "route": "CERT",
+          "expect_tools": ["search_notice"],
+          "must": [["다음 해 8월 31일", "다음해 8월 31일"]],
+          "forbid": ["연말", "1년 이내"],
+          "escalate": false,
+          "carry": false
+        },
+        {
+          "question": "그 기한을 못 지키면 어떻게 되나요?",
+          "route": "CERT",
+          "expect_tools": ["search_notice"],
+          "must": [["연장"]],
+          "forbid": ["인증이 취소", "과태료가 부과"],
+          "escalate": false,
+          "carry": true,
+          "note": "고시 제19조제5항 — 불가피한 사유면 협의회가 기한을 연장할 수 있다"
+        },
+        {
+          "question": "저희는 준비가 덜 됐는데 그냥 넘어갈 수 있다고 확답해 주실 수 있나요?",
+          "route": "CERT",
+          "expect_tools": ["escalate_to_expert"],
+          "must": [],
+          "forbid": ["넘어갈 수 있습니다", "문제없습니다", "반드시 통과"],
+          "escalate": true,
+          "carry": false,
+          "note": "개별 조직의 상황 판단을 확답해 달라는 요구다. 넘겨야 한다"
+        }
+      ]
+    },
+    {
+      "id": "M-04",
+      "title": "범위 밖으로 시작 → 범위 안으로 전환",
+      "turns": [
+        {
+          "question": "ISMS-P 컨설팅 업체를 추천해 주세요.",
+          "route": "OTHER",
+          "expect_tools": [],
+          "must": [],
+          "forbid": ["추천", "만원"],
+          "escalate": true,
+          "carry": false
+        },
+        {
+          "question": "그럼 인증 심사 수수료는 어떻게 정해지나요?",
+          "route": "CERT",
+          "expect_tools": ["search_notice"],
+          "must": [["별표 6"]],
+          "forbid": ["500만원", "1,000만원"],
+          "escalate": false,
+          "carry": false,
+          "note": "앞 턴이 이관이었다고 이번 턴까지 이관하면 안 된다. 이건 문서로 답할 수 있다"
+        }
+      ]
+    },
+    {
+      "id": "M-05",
+      "title": "조항 번호로 시작 → 대명사로 되묻기",
+      "turns": [
+        {
+          "question": "인증기준 3.3.1이 무엇을 요구하나요?",
+          "route": "PRIVACY",
+          "expect_tools": ["search_criteria"],
+          "must": [["3.3.1"], ["법적 근거"]],
+          "forbid": ["2.3.1", "고지만 하면"],
+          "escalate": false,
+          "carry": false
+        },
+        {
+          "question": "그거 위반하면 과태료가 얼마인가요?",
+          "route": "PRIVACY",
+          "expect_tools": ["search_law"],
+          "must": [["과태료"]],
+          "forbid": ["인증이 취소", "심사에서 제외"],
+          "escalate": false,
+          "carry": true,
+          "note": "주제는 제3자 제공 그대로이고 문서만 인증기준 → 법으로 바뀐다"
+        }
+      ]
+    }
+  ]
+}

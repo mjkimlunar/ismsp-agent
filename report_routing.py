@@ -15,7 +15,7 @@ import json
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from config import DATA
+from config import DATA, WORKERS
 
 ROUTES = ["MGMT", "PROTECT", "PRIVACY", "CERT", "OTHER"]
 
@@ -33,7 +33,7 @@ def one_round(cases):
         except Exception as e:
             return c, {"route": "OTHER", "confidence": 0.0, "reason": f"실패: {e}"}
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         return list(ex.map(go, cases))
 
 

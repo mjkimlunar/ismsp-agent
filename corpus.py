@@ -109,6 +109,52 @@ def get_chunk(chunk_id):
     return _by_id().get(chunk_id)
 
 
+# 고객이 쓰는 말 → 문서가 쓰는 말.
+#
+# BM25 는 글자가 겹쳐야 찾는다. "비번 몇자리요?" 로는 안내서의 "비밀번호 작성규칙" 이
+# 1위로 올라오지 않고, "동의 안받고 쓸수있는" 으로는 보호법 제15조가 아예 안 걸린다.
+# 문의는 구어체와 축약으로 오는데 문서는 법령 문투라서 어휘가 만나지 않는다.
+# 이 사전은 그 틈을 메운다. 문의를 고치는 게 아니라 **검색어에만** 보탠다.
+_ABBREV = {
+    "비번": "비밀번호",
+    "ISMS-P": "정보보호 및 개인정보보호 관리체계 인증",
+    "ISMS": "정보보호 관리체계 인증",
+    "CISO": "정보보호 최고책임자",
+    "CPO": "개인정보보호 책임자",
+    "안받고": "동의 없이",
+    "안 받고": "동의 없이",
+    "쓸수있": "수집 이용할 수 있",
+    "쓸 수 있": "수집 이용할 수 있",
+    "개인정보처리방침": "개인정보 처리방침",
+    "과태료": "과태료 벌칙",
+    "유출사고": "개인정보 유출 통지 신고",
+    "결함": "결함 심사 확인사항",
+}
+
+# 문의에 적힌 인증기준 번호(3.1.1)와 조문 번호(제15조)
+_NUM_IN_Q = re.compile(r"(?<!\d)\d\.\d{1,2}(?:\.\d{1,2})?(?!\d)|제\s?\d+조(?:의\s?\d+)?")
+
+
+def normalize_query(query):
+    """검색어를 문서 어휘로 편다.
+
+    두 가지를 한다.
+      1. 축약어·구어체를 문서 표현으로 바꿔 **덧붙인다**(지우지 않는다).
+      2. 조항 번호가 적혀 있으면 그 조항의 제목을 덧붙인다.
+         번호를 대고 묻는 문의는 검색할 필요가 없다 — 어느 조항인지 이미 알려 준 것이다.
+    """
+    extra = [v for k, v in _ABBREV.items() if k in query]
+
+    for num in _NUM_IN_Q.findall(query):
+        key = re.sub(r"\s", "", num)
+        for c in all_chunks():
+            if key in c["section"].replace(" ", ""):
+                extra.append(c["section"].split(" > ")[-1])
+                break
+
+    return (query + " " + " ".join(extra)).strip() if extra else query
+
+
 def search(query, sources=None, domains=None, top_k=4):
     """BM25 로 조각을 찾는다.
 
@@ -127,7 +173,7 @@ def search(query, sources=None, domains=None, top_k=4):
             return []
 
     scores = defaultdict(float)
-    for term, qf in Counter(_bigrams(query)).items():
+    for term, qf in Counter(_bigrams(normalize_query(query))).items():
         if term not in postings:
             continue
         w = idf[term]
