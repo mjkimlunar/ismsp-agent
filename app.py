@@ -81,7 +81,7 @@ with st.sidebar:
 
     if st.button("대화 새로 시작", use_container_width=True):
         st.session_state.turns = []
-        st.session_state.last_starter = None
+        st.session_state.pending = None
         st.rerun()
     st.caption(f"현재 {len(st.session_state.turns)}턴")
 
@@ -104,14 +104,24 @@ with st.sidebar:
 # ── 대화 ─────────────────────────────────────────────────────────
 head("ISMS-P 인증 문의 응답", "1.3rem", "0")
 
+def pick_example():
+    """예시를 고르면 문의로 넘기고 **드롭다운을 바로 되돌린다.**
+
+    고른 값을 그대로 두면 두 가지가 어긋난다. 대화를 새로 시작해도 그 예시가 남아
+    다시 제출되고, 같은 예시를 한 번 더 고를 수도 없다.
+    위젯의 값은 이렇게 콜백 안에서만 되돌릴 수 있다 — 화면을 그린 뒤에 바꾸면
+    Streamlit 이 막는다.
+    """
+    v = st.session_state.starter
+    if v != PICK_HINT:
+        st.session_state.pending = v
+        st.session_state.starter = PICK_HINT
+
+
 # 예시는 드롭다운으로 둔다. 버튼을 늘어놓으면 문장이 안 보여 무엇을 묻는지 알 수 없고,
 # 대화가 길어져도 자리를 차지한다. 목록은 대화 중에도 그대로 남겨 이어 묻기 쉽게 한다.
-choice = st.selectbox("예시", [PICK_HINT] + STARTERS,
-                      label_visibility="collapsed", key="starter")
-if choice != PICK_HINT and choice != st.session_state.get("last_starter"):
-    st.session_state.last_starter = choice
-    st.session_state.pending = choice
-    st.rerun()
+st.selectbox("예시", [PICK_HINT] + STARTERS, label_visibility="collapsed",
+             key="starter", on_change=pick_example)
 
 
 def show_detail(meta):
