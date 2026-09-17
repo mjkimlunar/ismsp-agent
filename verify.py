@@ -62,7 +62,12 @@ def _check_paragraphs(answer, chunks):
         if not 1 <= para <= len(_CIRCLED):
             continue
 
-        holders = [c for c in chunks if re.search(rf"제\s?{art}조", c["text"])]
+        # 그 조문을 **담고 있는** 조각을 찾는다. 본문에 그 번호가 나오는 것만으로는 안 된다.
+        # 고시 제19조는 본문에서 "정보통신망법 제47조제2항" 을 인용하는데, 본문 검색으로
+        # 찾으면 제19조 조각을 제47조인 줄 알고 그 ② 와 대조해 엉뚱한 지적을 냈다.
+        # 우리 문서에 없는 외부 법률(정보통신망법 등) 인용은 항을 확인할 방법이 없으므로 건너뛴다.
+        holders = [c for c in chunks
+                   if re.search(rf"제\s?{art}조(?:의\s?\d+)?\s*\(", c["section"])]
         if not holders:
             continue
 
@@ -78,7 +83,11 @@ def _check_paragraphs(answer, chunks):
         s = answer.rfind(".", 0, m.start()) + 1
         e = answer.find(".", m.end())
         sentence = answer[s:e if e > 0 else len(answer)]
-        cited = {_norm(x) for x in _NUM.findall(_PARA.sub(" ", sentence))}
+        # 한 문장에 인용이 여럿 섞이는 일이 흔하다. 다른 인용의 번호까지 끌어와 비교하면
+        # 엉뚱한 지적이 나오므로, 조·항·별표·서식 번호는 모두 지우고 남은 숫자만 본다.
+        stripped = _CLAUSE.sub(" ", _PARA.sub(" ", sentence))
+        stripped = re.sub(r"(?:별표|별지|제)\s?\d+(?:호|조)?(?:서식)?", " ", stripped)
+        cited = {_norm(x) for x in _NUM.findall(stripped)}
 
         # 그 조문에는 있는데 **짚은 항에는 없는** 숫자만 지적한다.
         # 조문 어디에도 없는 숫자는 위쪽 환각 검사가 이미 잡으므로 두 번 적지 않는다.
