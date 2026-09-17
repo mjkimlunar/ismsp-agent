@@ -6,10 +6,10 @@
 """
 from typing import Literal
 
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from config import MODEL, ROUTE_CONFIDENCE_FLOOR, TEMPERATURE
+from config import ROUTE_CONFIDENCE_FLOOR
+from llm import chat
 from prompts import ROUTE_GUIDE
 
 Route = Literal["MGMT", "PROTECT", "PRIVACY", "CERT", "OTHER"]
@@ -21,10 +21,7 @@ class Decision(BaseModel):
     reason: str = Field(description="어느 조항·조문 때문에 그렇게 보았는지 한 문장")
 
 
-from usage import Meter
-
-_llm = ChatOpenAI(model=MODEL, temperature=TEMPERATURE,
-                  callbacks=[Meter("분류")]).with_structured_output(Decision)
+_llm = chat("분류").with_structured_output(Decision)
 
 
 def classify(question):

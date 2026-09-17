@@ -21,23 +21,21 @@ from typing import Annotated, TypedDict
 
 from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
                                      ToolMessage)
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 import tools as tool_mod
 import verify
-from config import MAX_TOOL_TURNS, MODEL, TEMPERATURE
+from config import MAX_TOOL_TURNS
 from context import ROUTE_LABELS, search_in_route
 from corpus import SOURCE_NAMES, get_chunk, render
+from llm import chat
 from prompts import (ANSWER_RULES, COMPOSE_FINAL, COMPOSE_GATE, COMPOSE_HEAD,
                      COMPOSE_RULES, ESCALATE_TEMPLATE)
 from router import classify, should_escalate
 
-from usage import Meter
-
-_llm = ChatOpenAI(model=MODEL, temperature=TEMPERATURE, callbacks=[Meter("답변")])
+_llm = chat("답변")
 
 # 문의가 수치를 묻는가 / 조각에 수치가 적혀 있는가
 _ASKS_NUMBER = re.compile(r"몇|얼마|며칠|어느 정도|자릿수|주기|기한|비용|수수료")

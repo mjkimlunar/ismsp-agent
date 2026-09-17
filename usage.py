@@ -15,11 +15,21 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 LOG = Path(__file__).parent / "runs" / "usage.jsonl"
 
-# 1M 토큰당 달러. 모델을 바꾸면 여기도 바꾼다.
+# 1M 토큰당 달러 (입력, 출력). 모델을 바꾸면 여기도 채운다.
+# 무료 한도 안에서 쓰는 모델과 로컬 모델은 0 으로 둔다 — 토큰은 세고 돈은 세지 않는다.
 PRICES = {
     "gpt-4o-mini": (0.150, 0.600),
     "gpt-4o": (2.50, 10.00),
     "gpt-4.1-mini": (0.400, 1.600),
+    # Google AI Studio 무료 한도 · 분당 요청 수 제한만 있고 과금은 없다
+    "gemini-2.0-flash": (0.0, 0.0),
+    "gemini-2.5-flash": (0.0, 0.0),
+    "gemini-1.5-flash": (0.0, 0.0),
+    # 로컬 실행 — 전기 말고는 안 든다
+    "qwen2.5:3b": (0.0, 0.0),
+    "qwen2.5:7b": (0.0, 0.0),
+    "llama3.1:8b": (0.0, 0.0),
+    "gemma2:9b": (0.0, 0.0),
 }
 USD_KRW = 1380
 
@@ -35,12 +45,27 @@ class Meter(BaseCallbackHandler):
     def on_llm_end(self, response, **kwargs):
         out = response.llm_output or {}
         usage = out.get("token_usage") or {}
+        model = out.get("model_name", "")
+
+        # 제공자마다 사용량을 다른 자리에 넣는다. OpenAI 는 llm_output.token_usage 에,
+        # Gemini·Ollama 는 메시지의 usage_metadata 에 담아 준다. 둘 다 본다.
+        if not usage:
+            for gen in (response.generations or [[]])[0]:
+                msg = getattr(gen, "message", None)
+                meta = getattr(msg, "usage_metadata", None) or {}
+                if meta:
+                    usage = {"prompt_tokens": meta.get("input_tokens", 0),
+                             "completion_tokens": meta.get("output_tokens", 0)}
+                    model = model or (getattr(msg, "response_metadata", {}) or {}).get(
+                        "model_name", "")
+                    break
         if not usage:
             return
+
         row = {
             "t": round(time.time()),
             "tag": "/".join(x for x in (os.getenv("ISMSP_RUN_TAG", ""), self.tag) if x),
-            "model": out.get("model_name", ""),
+            "model": model,
             "in": usage.get("prompt_tokens", 0),
             "out": usage.get("completion_tokens", 0),
         }
