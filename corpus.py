@@ -100,8 +100,13 @@ def all_chunks():
     return _index()[0]
 
 
-def get(chunk_id):
-    return next((c for c in all_chunks() if c["id"] == chunk_id), None)
+@lru_cache(maxsize=1)
+def _by_id():
+    return {c["id"]: c for c in all_chunks()}
+
+
+def get_chunk(chunk_id):
+    return _by_id().get(chunk_id)
 
 
 def search(query, sources=None, domains=None, top_k=4):
@@ -136,12 +141,34 @@ def search(query, sources=None, domains=None, top_k=4):
     return [dict(items[i], score=round(s, 2)) for i, s in ranked if s > 0]
 
 
-def render(chunk, limit=MAX_CHUNK_CHARS):
-    """조각 하나를 프롬프트에 넣을 형태로 만든다. 출처를 항상 앞에 붙인다."""
+def excerpt(chunk, query, limit=MAX_CHUNK_CHARS):
+    """긴 조각에서 질의와 가장 많이 겹치는 구간을 잘라 준다.
+
+    앞에서부터 자르면 안 된다. 안내서 3.5.2 는 3,001자인데 정작 답인 "10일" 은
+    2,614자 지점에 있다. 앞 1,200자만 주면 모델은 문서에 답이 없다고 판단하고
+    엉뚱한 문서를 더 열거나, 근거가 있는데도 못 찾았다고 답한다.
+    실제로 그렇게 틀리는 것을 보고 넣은 함수다.
+    """
     text = chunk["text"]
-    if len(text) > limit:
-        text = text[:limit] + " …(이하 생략)"
-    return f"[{chunk['id']}] {chunk['section']}\n{text}"
+    if len(text) <= limit:
+        return text
+
+    q = set(_bigrams(query))
+    step = max(1, limit // 8)
+    best_at, best_hit = 0, -1
+    for start in range(0, len(text) - limit + step, step):
+        hit = sum(1 for b in set(_bigrams(text[start:start + limit])) if b in q)
+        if hit > best_hit:
+            best_at, best_hit = start, hit
+
+    head = "…(앞부분 생략) " if best_at > 0 else ""
+    tail = " …(이하 생략)" if best_at + limit < len(text) else ""
+    return head + text[best_at:best_at + limit] + tail
+
+
+def render(chunk, query="", limit=MAX_CHUNK_CHARS):
+    """조각 하나를 프롬프트에 넣을 형태로 만든다. 출처를 항상 앞에 붙인다."""
+    return f"[{chunk['id']}] {chunk['section']}\n{excerpt(chunk, query, limit)}"
 
 
 if __name__ == "__main__":

@@ -16,9 +16,11 @@ retrieve 와 compose 를 나눈 것은 측정해 보고 내린 결정이다. 한
 NEED_MORE 를 내보내 조회로 되돌릴 수 있다.
 """
 import json
+import re
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage,
+                                     ToolMessage)
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -28,13 +30,23 @@ import tools as tool_mod
 import verify
 from config import MAX_TOOL_TURNS, MODEL, TEMPERATURE
 from context import ROUTE_LABELS, search_in_route
-from corpus import SOURCE_NAMES, render
-from prompts import ANSWER_RULES, COMPOSE_RULES, ESCALATE_TEMPLATE
+from corpus import SOURCE_NAMES, get_chunk, render
+from prompts import (ANSWER_RULES, COMPOSE_FINAL, COMPOSE_GATE, COMPOSE_HEAD,
+                     COMPOSE_RULES, ESCALATE_TEMPLATE)
 from router import classify, should_escalate
 
 from usage import Meter
 
 _llm = ChatOpenAI(model=MODEL, temperature=TEMPERATURE, callbacks=[Meter("답변")])
+
+# 문의가 수치를 묻는가 / 조각에 수치가 적혀 있는가
+_ASKS_NUMBER = re.compile(r"몇|얼마|며칠|어느 정도|자릿수|주기|기한|비용|수수료")
+_HAS_NUMBER = re.compile(r"\d+\s*(?:자리|개월|일|년|회|원|시간|분|%|배|명)")
+
+# 같은 수치가 여러 문서에 있으면 원문을 먼저 본다. 안내서와 점검항목은 원문의 해설이다.
+# 검색 점수로 고르면 안 된다. 안내서 조각이 길고 말이 많아 점수가 늘 더 높게 나와서,
+# 인증기준 본문에 답이 적혀 있는 경우에도 해설서로 끌려간다.
+_DOC_RANK = ["criteria", "law", "notice", "guide", "checklist"]
 
 
 class State(TypedDict):
@@ -77,7 +89,8 @@ def node_assemble(state):
 
     route = state["route"]
     sources, _ = ROUTE_DOCS[route]
-    lines = []
+    asks_number = bool(_ASKS_NUMBER.search(state["question"]))
+    lines, best = [], []
     for src in sources:
         hits = search_in_route(state["question"], route, source=src, top_k=4)
         if not hits:
@@ -85,9 +98,39 @@ def node_assemble(state):
         titles = "\n".join(f"    - [{c['id']}] {c['section'].split(' > ')[-1]}"
                            for c in hits)
         lines.append(f"  {SOURCE_NAMES[src]} — {tool_of(src)}\n{titles}")
+        # 문의와 **가장 잘 맞는** 조각에 수치가 적혀 있는 문서만 후보로 둔다.
+        # 조각마다 표시를 달면 문의와 무관한 조각의 숫자까지 걸려서 엉뚱한 문서를 연다.
+        if _HAS_NUMBER.search(hits[0]["text"]):
+            best.append((_DOC_RANK.index(src), src))
 
     shelf = "\n".join(lines) or "  (문의와 가까운 조항을 찾지 못했다)"
+    if asks_number and best:
+        # 어느 문서에 숫자가 있는지는 항목마다 다르다. 인증기준 2.5.4 에는 자릿수가
+        # 없어 안내서를 봐야 하지만, 1.2.3 에는 "연 1회 이상" 이 있어 인증기준으로 족하다.
+        # 규칙으로 못 박으면 한쪽이 반드시 틀리므로 문서를 실제로 보고 고른다.
+        pick = tool_of(min(best)[1])
+        shelf += (f"\n\n  문의가 수치를 묻고 있다. 문의에 가장 가까운 조항에 실제로 숫자가 "
+                  f"적힌 문서는 하나뿐이다. {pick} 를 써라. 다른 문서에는 그 숫자가 없다.")
     return {"shelf": shelf}
+
+
+# 도구 출력에 찍힌 조각 id. IC-1.1.1 / GD-2.5.4 / AR-19 / PIPA-22-2 를 모두 잡는다.
+_CHUNK_ID = re.compile(r"\[([A-Z]{2,5}-[\d.]+(?:-\d+)?)\]")
+
+
+def read_chunks(messages):
+    """대화 기록에서 이번 문의가 실제로 읽은 조각을 되찾는다.
+
+    도구가 무엇을 돌려줬는지는 ToolMessage 에 남아 있으므로 여기가 유일한 출처다.
+    모듈 변수에 따로 쌓으면 스레드마다 어긋나고, 그러면 작성 단계가 남의 근거로 답을 쓴다.
+    """
+    ids = []
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            for cid in _CHUNK_ID.findall(m.content or ""):
+                if cid not in ids:
+                    ids.append(cid)
+    return [c for c in (get_chunk(i) for i in ids) if c]
 
 
 def tool_of(source):
@@ -141,16 +184,13 @@ def node_compose(state):
     조회 기록(messages)을 통째로 넘기지 않고 조각만 다시 정리해서 준다.
     대화 기록에는 검색 실패나 중복 조각이 섞여 있어서 그대로 주면 그걸 또 받아쓴다.
     """
-    chunks = tool_mod.seen_chunks()
-    body = "\n\n".join(render(c) for c in chunks) or "(근거 없음)"
+    chunks = read_chunks(state["messages"])
+    body = "\n\n".join(render(c, state["question"]) for c in chunks) or "(근거 없음)"
 
-    rules = COMPOSE_RULES
-    if state.get("retries", 0) >= 2:
-        # 조회 예산을 다 썼다. 여기서 또 NEED_MORE 를 받으면 답이 영영 안 나온다.
-        # 넘기는 대신 지금 있는 근거로 쓰게 하되, 없는 것은 없다고 밝히게 한다.
-        rules += ("\n\n조회는 여기까지다. 이제 NEED_MORE 를 쓰지 말고 지금 있는 근거로 답한다.\n"
-                  "근거에 없는 값은 지어내지 말고 '문서가 구체적인 수치를 정해 두고 있지는 "
-                  "않습니다' 처럼 없다는 사실을 그대로 밝힌다.")
+    # 조회를 되돌릴 수 있을 때만 NEED_MORE 를 가르친다. 마지막 시도에는 그 말을 아예
+    # 꺼내지 않는다. 가르쳐 놓고 쓰지 말라고 하면 모델은 가르친 쪽을 따른다.
+    gate = COMPOSE_GATE if state.get("retries", 0) < 1 else COMPOSE_FINAL
+    rules = COMPOSE_HEAD + gate + COMPOSE_RULES
 
     msgs = [
         SystemMessage(f"{rules}\n\n[근거]\n{body}"),
@@ -173,12 +213,15 @@ def route_after_compose(state):
     """
     if not state.get("missing"):
         return "verify"
-    if not tool_mod.seen_chunks():
+    if not read_chunks(state["messages"]):
         return "escalate"
+    # 되돌리기는 한 번만 한다. 두 번 세 번 돌려 보내면, 문서가 "자체적으로 결정한다" 고
+    # 적어 둔 항목에서 모델이 끝내 숫자를 찾으려 다른 문서까지 열고도 못 찾아 넘겨 버린다.
+    # 없다는 사실 자체가 답인 경우가 있으므로, 한 번 더 찾아보고 안 나오면 쓰게 한다.
     r = state.get("retries", 0)
-    if r < 2:
+    if r < 1:
         return "hint"
-    return "compose" if r < 3 else "escalate"
+    return "compose" if r < 2 else "escalate"
 
 
 def node_hint(state):
@@ -200,7 +243,7 @@ def node_tools(state):
 
 # ── ④ 검증 ────────────────────────────────────────────────────────
 def node_verify(state):
-    chunks = tool_mod.seen_chunks()
+    chunks = read_chunks(state["messages"])
     return {"verification": verify.verdict(state.get("answer", ""), chunks)}
 
 
@@ -273,17 +316,17 @@ def called_tools(messages):
 
 def run(question):
     """문의 하나를 처음부터 끝까지 돌린다. 화면과 평가가 같이 쓴다."""
-    tool_mod.reset()
     final = graph().invoke({"question": question, "messages": [], "retries": 0,
                             "missing": ""}, {"recursion_limit": 30})
+    msgs = final.get("messages", [])
     return {
         "question": question,
         "route": final["route"],
         "confidence": final["confidence"],
         "route_reason": final["route_reason"],
         "answer": final.get("answer", ""),
-        "tools": called_tools(final.get("messages", [])),
-        "chunks": tool_mod.seen_chunks(),
+        "tools": called_tools(msgs),
+        "chunks": read_chunks(msgs),
         "escalated": final.get("escalated", False),
         "verification": final.get("verification", {"ok": True, "issues": []}),
     }

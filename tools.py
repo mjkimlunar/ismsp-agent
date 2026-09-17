@@ -9,31 +9,22 @@ from langchain_core.tools import tool
 
 from config import TOP_K
 from context import search_in_route
-
-# 도구가 부를 때마다 어느 조각을 봤는지 여기에 쌓는다. 답변 뒤 검증과 화면 표시에 쓴다.
-# 문의 한 건마다 reset() 으로 비운다.
-_seen = {}
-
-
-def reset():
-    _seen.clear()
-
-
-def seen_chunks():
-    """이번 문의에서 실제로 읽은 조각들. 호출 순서를 유지한다."""
-    return list(_seen.values())
+from corpus import render
 
 
 def _run(query, route, source):
+    """검색 결과를 조각 id 를 붙여 돌려준다.
+
+    어느 조각을 읽었는지는 **따로 저장하지 않는다.** 여기에 모듈 변수로 쌓아 두면
+    평가처럼 여러 문의를 동시에 돌릴 때 서로 섞이고, LangGraph 가 노드를 다른
+    스레드에서 실행하기도 해서 스레드 지역 변수로도 해결되지 않는다.
+    대신 출력에 [조각id] 를 찍어 두고, 필요한 쪽에서 대화 기록을 읽어 되찾는다.
+    근거의 출처가 대화 기록 하나로 일원화되어 추적도 쉬워진다.
+    """
     hits = search_in_route(query, route, source=source, top_k=TOP_K)
     if not hits:
         return "검색 결과 없음. 다른 검색어로 한 번 더 찾아보거나 escalate_to_expert 로 넘겨라."
-    out = []
-    for c in hits:
-        _seen[c["id"]] = c
-        text = c["text"][:1200]
-        out.append(f"[{c['id']}] {c['section']}\n{text}")
-    return "\n\n".join(out)
+    return "\n\n".join(render(c, query) for c in hits)
 
 
 def make_tools(route):
