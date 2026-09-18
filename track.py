@@ -16,6 +16,7 @@ CSV 로 둔 것은 나중에 기계로 다시 읽기 위해서다. 리포트 본
 import argparse
 import csv
 import io
+import json
 import subprocess
 import time
 from datetime import datetime
@@ -70,12 +71,31 @@ def measure(which, n):
 
     if "route" in which:
         try:
-            from report_routing import load_cases as rcases, metrics, one_round as rround
-            pairs = [(c["route"], d["route"])
-                     for _ in range(n) for c, d in rround(rcases())]
-            acc, _, macro, _ = metrics(pairs)
+            from report_routing import ROUTES, load_cases as rcases
+            from report_routing import metrics, one_round as rround
+            rows = [(c, d) for _ in range(n) for c, d in rround(rcases())]
+            pairs = [(c["route"], d["route"]) for c, d in rows]
+            acc, per, macro, mat = metrics(pairs)
             out["route_acc"] = round(acc, 4)
             out["route_macro_f1"] = round(macro, 4)
+
+            # 혼동 행렬과 오분류를 파일로 남긴다.
+            # 화면에서 다시 그리려면 LLM 을 또 불러야 하는데, 그건 볼 때마다 돈이 든다.
+            # 잰 결과를 저장해 두면 화면은 공짜로 그린다.
+            wrong = [{"id": c["id"], "q": c["question"],
+                      "want": c["route"], "got": d["route"],
+                      "conf": d["confidence"], "why": d["reason"][:160]}
+                     for c, d in rows if c["route"] != d["route"]]
+            (HIST.parent / "last_routing.json").write_text(json.dumps({
+                "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "n": n, "cases": len(rcases()),
+                "acc": round(acc, 4), "macro_f1": round(macro, 4),
+                "routes": ROUTES,
+                "matrix": {t: {p: mat[t][p] for p in ROUTES} for t in ROUTES},
+                "per_class": {r: {k: round(v, 4) for k, v in per[r].items()}
+                              for r in ROUTES},
+                "wrong": wrong,
+            }, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as e:
             out["route_acc"] = out["route_macro_f1"] = ""
             print(f"  !! routing 실패: {str(e)[:90]}")

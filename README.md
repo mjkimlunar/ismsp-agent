@@ -53,7 +53,8 @@ streamlit run app.py              # 데모
 | `python evaluate.py -n 5` | 두 지표 측정 (기본 `eval` 16건, `--split all` 로 20건) |
 | `python agent.py "문의"` | 문의 하나를 파이프라인에 통과시켜 결과를 본다 |
 | `python usage.py` | 지금까지 쓴 토큰과 비용 |
-| `streamlit run app.py` | 답변 + 호출 도구 + 근거 조항 + 검증 결과를 한 화면에 |
+| `python track.py -n 3 --note "..."` | 네 평가셋을 한 번에 재서 `runs/metrics_history.csv` 에 한 줄로 쌓는다 |
+| `streamlit run app.py` | 챗봇 데모 + **성능 지표 화면**(사이드바에서 전환) |
 
 ## 카테고리와 근거 문서
 
