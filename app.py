@@ -8,10 +8,42 @@
 멀티턴에서 이어받는 것은 **문의와 답변뿐**이다. 이전 턴의 조회 기록은 넘기지 않는다.
 넘기면 다음 턴이 앞 근거를 그대로 받아쓴다.
 """
+import os
+
 import streamlit as st
 
 from context import ROUTE_LABELS
 from corpus import SOURCE_NAMES, all_chunks
+
+
+def secret(name, default=""):
+    """설정값을 환경변수 → st.secrets 순서로 찾는다.
+
+    로컬에서는 `.env` 가 환경변수로 올라오고, Streamlit Cloud 에서는 시크릿이 올라온다.
+    Cloud 는 시크릿을 환경변수로도 넣어 주지만 그러지 않는 배포 환경도 있어 둘 다 본다.
+    """
+    v = os.getenv(name)
+    if v:
+        return v
+    try:
+        return st.secrets.get(name, default)
+    except Exception:          # 시크릿 파일이 없는 로컬에서는 접근 자체가 예외다
+        return default
+
+
+# 배포 환경에서 시크릿으로 받은 키를 환경변수로 옮긴다.
+# config.py 는 환경변수만 보므로(streamlit 을 import 하지 않는다 — CLI 스크립트도 쓰기 때문),
+# 모델을 만들기 전에 여기서 채워 준다.
+for _k in ("OPENAI_API_KEY", "ISMSP_MODEL", "ISMSP_PROVIDER"):
+    _v = secret(_k)
+    if _v:
+        os.environ.setdefault(_k, _v)
+
+# 아래 둘은 **설정하지 않으면 꺼진다.** 로컬에서 쓰던 방식이 바뀌지 않게 하려는 것이다.
+# 공개 URL 로 열 때만 시크릿에 넣는다. 공개해 두면 남이 내 크레딧으로 질문하게 되고,
+# 문의 한 건이 1.7원이라 긁히면 그만큼 그대로 나간다.
+APP_PASSWORD = secret("APP_PASSWORD")
+MAX_TURNS = int(secret("APP_MAX_TURNS", "0") or 0)
 
 st.set_page_config(page_title="ISMS-P 인증 문의 응답", page_icon="📋", layout="wide")
 
@@ -73,6 +105,18 @@ if "turns" not in st.session_state:
     st.session_state.turns = []          # [{question, answer, meta}, …]
 if "pending" not in st.session_state:
     st.session_state.pending = None
+
+# ── 공개 배포용 잠금 (APP_PASSWORD 를 넣었을 때만 켜진다) ──────────
+if APP_PASSWORD and not st.session_state.get("authed"):
+    head("ISMS-P 인증 문의 응답", "1.3rem", "0")
+    st.caption("열람용 비밀번호를 입력하세요.")
+    pw = st.text_input("비밀번호", type="password", label_visibility="collapsed")
+    if pw and pw == APP_PASSWORD:
+        st.session_state.authed = True
+        st.rerun()
+    elif pw:
+        st.error("비밀번호가 맞지 않습니다.")
+    st.stop()
 
 # ── 사이드바 ──────────────────────────────────────────────────────
 with st.sidebar:
@@ -169,9 +213,16 @@ for turn in st.session_state.turns:
         st.write(turn["answer"])
         show_detail(turn["meta"])
 
-typed = st.chat_input("문의를 입력하세요")
+capped = MAX_TURNS and len(st.session_state.turns) >= MAX_TURNS
+if capped:
+    st.info(f"이 세션에서 {MAX_TURNS}건까지 물어보실 수 있습니다. "
+            f"**대화 새로 시작**을 누르면 다시 이어갈 수 있습니다.")
+
+typed = st.chat_input("문의를 입력하세요", disabled=bool(capped))
 question = typed or st.session_state.pending
 st.session_state.pending = None
+if capped:
+    question = None
 
 if question:
     with st.chat_message("user"):
