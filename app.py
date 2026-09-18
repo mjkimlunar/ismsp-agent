@@ -198,3 +198,6 @@ if question:
 
     st.session_state.turns.append(
         {"question": question, "answer": r["answer"], "meta": meta})
+    # 사이드바는 이 턴을 담기 전에 이미 그려졌다. 그대로 두면 턴 수가 한 박자 늦게 보인다.
+    # 다시 그리면 대화 전체가 위의 반복문 한 곳에서만 그려져 화면도 일관해진다.
+    st.rerun()
