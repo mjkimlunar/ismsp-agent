@@ -955,6 +955,7 @@ python evaluate.py -n 3 --split all    # 보류 4건까지 포함
 python evaluate_multiturn.py -n 3      # 멀티턴 — 턴 위치별로 나눠 본다
 python report_escalation.py -n 2       # 이관율과 부당한 이관
 python report_model.py                 # 모델을 바꿔 어느 단계에서 깨지는지
+python track.py -n 3 --note "무엇을 고쳤는지"   # 네 평가셋을 한 번에 재서 한 줄로 쌓는다
 python agent.py "인증 심사 수수료는 얼마인가요?"
 python usage.py                 # 지금까지 쓴 토큰과 비용
 streamlit run app.py            # 데모
@@ -977,6 +978,7 @@ agent.py       LangGraph 파이프라인
 evaluate.py    두 지표 측정
 evaluate_multiturn.py  멀티턴 — 턴 위치별·이어받기 여부별
 report_routing.py      분류 성능 — 정확도·macro F1·혼동 행렬·오분류 사유
+track.py               네 평가셋을 한 번에 재서 runs/metrics_history.csv 에 한 줄로 쌓는다
 report_escalation.py   이관율과 부당한 이관
 report_model.py        모델 교체 진단 — 어느 단계에서 깨지는가
 llm.py         제공자 교체 층 (openai · google · ollama)
